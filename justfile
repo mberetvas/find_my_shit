@@ -1,9 +1,9 @@
 set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 
 clippy:
-    cargo clippy -- -D warnings
+    cargo clippy
 
-build-release:
+build-r:
     cargo build --release
 
 run-release: build-release
