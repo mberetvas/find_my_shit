@@ -117,7 +117,7 @@ async fn search_folder_for_query<P: AsRef<Path>>(
 }
 
 #[derive(Parser)]
-#[command(about = "Search for text in files within a folder", long_about = None)]
+#[command(about = "Search for text in files within a folder", long_about = "Search for text in files within a folder.\n\nWildcards:\n- % matches any sequence of characters (including none)\n- _ matches exactly one character\n\nExamples:\n- 'hello%' matches 'hello', 'helloworld', etc.\n- '_at' matches 'cat', 'bat', etc.\n- '%test%' matches any string containing 'test'")]
 struct Args {
     /// Search pattern (supports % for any chars and _ for single char, SQL-like wildcards)
     search_query: String,
@@ -126,7 +126,7 @@ struct Args {
     folder_path: String,
 
     /// Enable case-insensitive search
-    #[arg(long)]
+    #[arg(long, alias = "ci")]
     case_insensitive: bool,
 }
 
@@ -152,4 +152,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[async_std::test]
+    async fn test_invalid_folder_paths() {
+        // Test non-existent path
+        let result = search_folder_for_query("non_existent_folder", "test", false).await;
+        assert!(result.is_err(), "Should fail for non-existent path");
+
+        // Test empty path
+        let result = search_folder_for_query("", "test", false).await;
+        assert!(result.is_err(), "Should fail for empty path");
+
+        // Test path with invalid characters (on Windows)
+        let result = search_folder_for_query("invalid<>path", "test", false).await;
+        assert!(result.is_err(), "Should fail for path with invalid characters");
+
+        // Test path with forward slashes (should work, but if doesn't exist, fails)
+        let result = search_folder_for_query("non/existent/path", "test", false).await;
+        assert!(result.is_err(), "Should fail for non-existent path with forward slashes");
+
+        // Test passing a file instead of folder
+        let result = search_folder_for_query("src/main.rs", "test", false).await;
+        assert!(result.is_err(), "Should fail when passing a file path instead of folder");
+
+        // Test path with spaces (non-existent)
+        let result = search_folder_for_query("folder with spaces", "test", false).await;
+        assert!(result.is_err(), "Should fail for non-existent path with spaces");
+
+        // Test valid folder (assuming src exists)
+        let result = search_folder_for_query("src", "async_std", false).await;
+        assert!(result.is_ok(), "Should succeed for valid folder");
+    }
 }
