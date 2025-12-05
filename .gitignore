@@ -27,3 +27,6 @@ bac_files/
 
 # vscode folder
 .vscode/
+
+# github folder
+.github/
