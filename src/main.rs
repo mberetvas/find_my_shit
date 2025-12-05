@@ -1,10 +1,10 @@
 use async_std::fs;
 use async_std::stream::StreamExt;
-use encoding_rs::{Encoding, UTF_8};
 use chardetng::EncodingDetector;
-use std::path::Path;
-use regex::RegexBuilder;
 use clap::Parser;
+use encoding_rs::{ Encoding, UTF_8 };
+use regex::RegexBuilder;
+use std::path::Path;
 
 async fn read_text_file_async(file_path: &str) -> Result<String, Box<dyn std::error::Error>> {
     let bytes = fs::read(file_path).await?;
@@ -46,18 +46,46 @@ async fn search_folder_for_query<P: AsRef<Path>>(
     folder: P,
     query: &str,
     case_insensitive: bool,
+    recursively: bool
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let folder_path = folder.as_ref();
-    let mut file_paths = Vec::new();
-    let mut entries = fs::read_dir(folder_path).await?;
 
-    // Collect all file paths from directory
-    while let Some(entry_result) = entries.next().await {
-        if let Ok(entry) = entry_result {
-            if let Ok(file_type) = entry.file_type().await {
-                if file_type.is_file() {
-                    if let Some(path_str) = entry.path().to_str() {
-                        file_paths.push(path_str.to_string());
+    // Check if the root folder exists and is a directory
+    match async_std::fs::metadata(folder_path).await {
+        Ok(metadata) => {
+            if !metadata.is_dir() {
+                return Err("Path is not a directory".into());
+            }
+        }
+        Err(_) => {
+            return Err("Folder does not exist".into());
+        }
+    }
+
+    let mut file_paths = Vec::new();
+
+    let mut dir_stack: Vec<std::path::PathBuf> = vec![folder.as_ref().to_path_buf()];
+
+    while let Some(current_dir) = dir_stack.pop() {
+        let mut entries = match fs::read_dir(&current_dir).await {
+            Ok(e) => e,
+
+            Err(_) => {
+                continue;
+            } // Skip unreadable directories
+        };
+
+        while let Some(entry_result) = entries.next().await {
+            if let Ok(entry) = entry_result {
+                if let Ok(file_type) = entry.file_type().await {
+                    if file_type.is_symlink() {
+                        continue; // Skip symlinks to avoid loops
+                    } else if file_type.is_file() {
+                        if let Some(path_str) = entry.path().to_str() {
+                            file_paths.push(path_str.to_string());
+                        }
+                    } else if file_type.is_dir() && recursively {
+                        dir_stack.push(entry.path().into());
                     }
                 }
             }
@@ -72,9 +100,7 @@ async fn search_folder_for_query<P: AsRef<Path>>(
     // Build regex once if wildcard query
     let regex_opt = if is_wildcard {
         let regex_str = wildcard_to_regex(query);
-        let re = RegexBuilder::new(&regex_str)
-            .case_insensitive(case_insensitive)
-            .build()?;
+        let re = RegexBuilder::new(&regex_str).case_insensitive(case_insensitive).build()?;
         Some(re)
     } else {
         None
@@ -117,7 +143,10 @@ async fn search_folder_for_query<P: AsRef<Path>>(
 }
 
 #[derive(Parser)]
-#[command(about = "Search for text in files within a folder", long_about = "Search for text in files within a folder.\n\nWildcards:\n- % matches any sequence of characters (including none)\n- _ matches exactly one character\n\nExamples:\n- 'hello%' matches 'hello', 'helloworld', etc.\n- '_at' matches 'cat', 'bat', etc.\n- '%test%' matches any string containing 'test'")]
+#[command(
+    about = "Search for text in files within a folder",
+    long_about = "Search for text in files within a folder.\n\nWildcards:\n- % matches any sequence of characters (including none)\n- _ matches exactly one character\n\nExamples:\n- 'hello%' matches 'hello', 'helloworld', etc.\n- '_at' matches 'cat', 'bat', etc.\n- '%test%' matches any string containing 'test'\n\nUse `-R`/`--recursively` to search subdirectories recursively."
+)]
 struct Args {
     /// Search pattern (supports % for any chars and _ for single char, SQL-like wildcards)
     search_query: String,
@@ -128,6 +157,10 @@ struct Args {
     /// Enable case-insensitive search
     #[arg(long, alias = "ci")]
     case_insensitive: bool,
+
+    /// Search subdirectories recursively
+    #[arg(long, short = 'R')]
+    recursively: bool,
 }
 
 // context7: async main entry point
@@ -137,7 +170,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Searching for '{}' in folder: {}\n", args.search_query, args.folder_path);
 
-    match search_folder_for_query(&args.folder_path, &args.search_query, args.case_insensitive).await {
+    match
+        search_folder_for_query(
+            &args.folder_path,
+            &args.search_query,
+            args.case_insensitive,
+            args.recursively
+        ).await
+    {
         Ok(matching_files) => {
             if matching_files.is_empty() {
                 println!("No files found matching '{}'", args.search_query);
@@ -157,35 +197,73 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[async_std::test]
     async fn test_invalid_folder_paths() {
         // Test non-existent path
-        let result = search_folder_for_query("non_existent_folder", "test", false).await;
+        let result = search_folder_for_query("non_existent_folder", "test", false, false).await;
         assert!(result.is_err(), "Should fail for non-existent path");
 
         // Test empty path
-        let result = search_folder_for_query("", "test", false).await;
+        let result = search_folder_for_query("", "test", false, false).await;
         assert!(result.is_err(), "Should fail for empty path");
 
         // Test path with invalid characters (on Windows)
-        let result = search_folder_for_query("invalid<>path", "test", false).await;
+        let result = search_folder_for_query("invalid<>path", "test", false, false).await;
         assert!(result.is_err(), "Should fail for path with invalid characters");
 
         // Test path with forward slashes (should work, but if doesn't exist, fails)
-        let result = search_folder_for_query("non/existent/path", "test", false).await;
+        let result = search_folder_for_query("non/existent/path", "test", false, false).await;
         assert!(result.is_err(), "Should fail for non-existent path with forward slashes");
 
         // Test passing a file instead of folder
-        let result = search_folder_for_query("src/main.rs", "test", false).await;
+        let result = search_folder_for_query("src/main.rs", "test", false, false).await;
         assert!(result.is_err(), "Should fail when passing a file path instead of folder");
 
         // Test path with spaces (non-existent)
-        let result = search_folder_for_query("folder with spaces", "test", false).await;
+        let result = search_folder_for_query("folder with spaces", "test", false, false).await;
         assert!(result.is_err(), "Should fail for non-existent path with spaces");
 
         // Test valid folder (assuming src exists)
-        let result = search_folder_for_query("src", "async_std", false).await;
+        let result = search_folder_for_query("src", "async_std", false, false).await;
         assert!(result.is_ok(), "Should succeed for valid folder");
+    }
+
+    #[async_std::test]
+    async fn test_non_recursive_search() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        // Create a file in root
+        let file1 = root.join("file1.txt");
+        std::fs::write(&file1, "test content").unwrap();
+        // Create subdir with file
+        let subdir = root.join("subdir");
+        std::fs::create_dir(&subdir).unwrap();
+        let file2 = subdir.join("file2.txt");
+        std::fs::write(&file2, "test content").unwrap();
+        // Search non-recursive
+        let result = search_folder_for_query(root, "test", false, false).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result[0].ends_with("file1.txt"));
+    }
+
+    #[async_std::test]
+    async fn test_recursive_search() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        // Create a file in root
+        let file1 = root.join("file1.txt");
+        std::fs::write(&file1, "test content").unwrap();
+        // Create subdir with file
+        let subdir = root.join("subdir");
+        std::fs::create_dir(&subdir).unwrap();
+        let file2 = subdir.join("file2.txt");
+        std::fs::write(&file2, "test content").unwrap();
+        // Search recursive
+        let result = search_folder_for_query(root, "test", false, true).await.unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|p| p.ends_with("file1.txt")));
+        assert!(result.iter().any(|p| p.ends_with("file2.txt")));
     }
 }
