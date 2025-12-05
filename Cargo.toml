@@ -1,0 +1,10 @@
+[package]
+name = "find_my_shit"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+encoding_rs = "0.8"
+chardetng = "0.1"
+async-std = { version = "1.12", features = ["attributes"] }
+regex = "1.10"
