@@ -8,3 +8,4 @@ encoding_rs = "0.8"
 chardetng = "0.1"
 async-std = { version = "1.12", features = ["attributes"] }
 regex = "1.10"
+clap = { version = "4", features = ["derive"] }

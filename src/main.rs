@@ -4,6 +4,7 @@ use encoding_rs::{Encoding, UTF_8};
 use chardetng::EncodingDetector;
 use std::path::Path;
 use regex::RegexBuilder;
+use clap::Parser;
 
 async fn read_text_file_async(file_path: &str) -> Result<String, Box<dyn std::error::Error>> {
     let bytes = fs::read(file_path).await?;
@@ -115,22 +116,33 @@ async fn search_folder_for_query<P: AsRef<Path>>(
     Ok(matching_files)
 }
 
+#[derive(Parser)]
+#[command(about = "Search for text in files within a folder", long_about = None)]
+struct Args {
+    /// Search pattern (supports % for any chars and _ for single char, SQL-like wildcards)
+    search_query: String,
+
+    /// Folder path to search in
+    folder_path: String,
+
+    /// Enable case-insensitive search
+    #[arg(long)]
+    case_insensitive: bool,
+}
+
 // context7: async main entry point
 #[async_std::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let folder_path = "D:/Projecten_Thuis/find_my_shit/bac_files";
+    let args = Args::parse();
 
-    // Example: search with wildcard pattern
-    let search_query = "%strsql%";
+    println!("Searching for '{}' in folder: {}\n", args.search_query, args.folder_path);
 
-    println!("Searching for '{search_query}' in folder: {folder_path}\n");
-
-    match search_folder_for_query(folder_path, search_query, true).await {
+    match search_folder_for_query(&args.folder_path, &args.search_query, args.case_insensitive).await {
         Ok(matching_files) => {
             if matching_files.is_empty() {
-                println!("No files found matching '{search_query}'");
+                println!("No files found matching '{}'", args.search_query);
             } else {
-                println!("Files matching '{search_query}': ");
+                println!("Files matching '{}': ", args.search_query);
                 for path in matching_files {
                     println!("  {path}");
                 }
